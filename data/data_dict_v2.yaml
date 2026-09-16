@@ -1,0 +1,589 @@
+# ============================================================
+# Lead Analysis 数据字典 v2.0
+# 定位：数据库设计的"唯一真源"——表结构、字段、约束、索引均以此为准
+# 对应建表脚本：init_db.sql（本字典可直接驱动生成）
+# 维护规范：任何表结构变更 → version+1 → change_log 记录
+# ============================================================
+meta:
+  name: Lead Analysis 数据字典
+  version: "2.1"
+  database: lead_analysis
+  charset: utf8mb4                    # 必须：中文+emoji，勿用 utf8
+  collation: utf8mb4_0900_ai_ci       # MySQL 5.7 改用 utf8mb4_unicode_ci
+  engine: InnoDB                      # 数据库管理系统的存储引擎
+  db_type: MySQL 8.0.13+              # DEFAULT (UUID()) 需 8.0.13+；SQLite 不适用
+  note: |
+    字段属性说明：
+    - type/length: 列类型与长度；DECIMAL 的 length 为 "18,2"（精度,小数位）
+    - nullable: 是否允许 NULL
+    - default: 默认值；UUID() 为 MySQL 8.0.13+ 表达式默认值
+    - enum: 取值范围（等价类用例的直接依据）
+    - domain: 数值/格式约束（边界值用例的直接依据）
+    - references: 引用关系（外键完整性测试点）
+  change_log:
+    - "v2.0: 新增 meta 头、indexes/constraints/business_rules 段；修正 call_type/transfer_type 语义；UUID 字段 VARCHAR(36) 改 CHAR(36)；新增 case_info/user_case_permission/audit_log/import_log 四张支撑表；补充 end_time 推导规则与各枚举字段取值域"
+    - "v2.1: 缺陷修复——caller/callee 正则 \d{9} 改 [0-9]{9}（防全角数字混入）；BR-04 补充分块规则（单块上限500字、超长内容允许切分）；新增 record_embedding_map 映射表（记录↔分块一对多关系）"
+
+tables:
+  # ==========================================================
+  - table: case_info
+    comment: 案件信息表
+    purpose: 案件的元数据锚点；所有数据表的 case_id 均引用此处，权限与审计都挂在案件上
+    fields:
+      - name: case_id
+        type: CHAR
+        length: 36
+        primary_key: true
+        nullable: false
+        default: 'UUID()'
+        description: 案件ID，全局唯一
+      - name: case_name
+        type: VARCHAR
+        length: 128
+        nullable: false
+        description: 案件名称（如"1·15 专案"）
+      - name: case_status
+        type: VARCHAR
+        length: 16
+        nullable: false
+        default: '进行中'
+        enum: [进行中, 已归档, 已删除]
+        description: 案件状态，驱动案件生命周期管理（归档/清理）
+      - name: owner_id
+        type: VARCHAR
+        length: 64
+        nullable: true
+        description: 案件负责人（用户ID）
+      - name: description
+        type: TEXT
+        nullable: true
+        description: 案件描述
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 创建时间
+      - name: update_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP ON UPDATE
+        description: 最后修改时间
+    indexes:
+      - name: PRIMARY
+        columns: [case_id]
+        unique: true
+
+  # ==========================================================
+  - table: call_record
+    comment: 话单表
+    purpose: 结构化电子数据，走 SQL 精确检索（案件+时间+号码条件）
+    fields:
+      - name: call_id
+        type: CHAR
+        length: 36
+        primary_key: true
+        nullable: false
+        default: 'UUID()'
+        description: 话单ID，全局唯一
+      - name: case_id
+        type: CHAR
+        length: 36
+        nullable: false
+        description: 案件ID，案件隔离的关键字段
+        references: case_info.case_id
+      - name: caller
+        type: VARCHAR
+        length: 32
+        nullable: false
+        description: 主叫号码
+        domain: '正则 ^1[3-9][0-9]{9}$（11位手机号；用 [0-9] 而非 \d，防止全角数字混入）'
+      - name: callee
+        type: VARCHAR
+        length: 32
+        nullable: false
+        description: 被叫号码
+        domain: '正则 ^1[3-9][0-9]{9}$（防全角数字混入）'
+      - name: call_time
+        type: DATETIME
+        nullable: false
+        description: 通话开始时间；结束时间按规则推导：end_time = call_time + duration 秒
+      - name: duration
+        type: INT
+        nullable: true
+        default: 0
+        description: 通话时长（秒）；未接/拒接为 0
+        domain: 'duration >= 0'
+      - name: call_channel
+        type: VARCHAR
+        length: 32
+        nullable: false
+        enum: [移动, 联通, 电信, VoIP, 微信语音]
+        description: 通话渠道
+      - name: call_type
+        type: VARCHAR
+        length: 16
+        nullable: true
+        enum: [接通, 未接, 拒接]
+        description: 通话结果类型；主被叫方向由 caller/callee 表达，勿重复
+      - name: location
+        type: VARCHAR
+        length: 128
+        nullable: true
+        description: 基站或归属地（线索3：与聊天地点做跨数据集关联）
+      - name: content
+        type: TEXT
+        nullable: true
+        description: 通话内容摘要（转写文本），可选向量化
+      - name: embedding_id
+        type: VARCHAR
+        length: 64
+        nullable: true
+        description: 关联向量库分块ID；常规分块下一条记录至多对应一个分块（单值足够）；超长内容切分的一对多关系由 record_embedding_map 维护；非数据库外键，一致性靠对账脚本校验
+      - name: raw_data
+        type: JSON
+        nullable: true
+        description: 原始话单字段（溯源）
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 记录插入时间
+      - name: update_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP ON UPDATE
+        description: 记录最后修改时间
+    indexes:
+      - name: idx_case_time
+        columns: [case_id, call_time]
+        unique: false
+        description: 核心检索路径：所有查询按"案件+时间范围"过滤
+      - name: idx_caller
+        columns: [caller]
+        unique: false
+      - name: idx_callee
+        columns: [callee]
+        unique: false
+      - name: idx_embedding
+        columns: [embedding_id]
+        unique: false
+    constraints:
+      - name: fk_call_case
+        type: FOREIGN KEY
+        definition: 'case_id REFERENCES case_info(case_id)'
+      - name: chk_call_duration
+        type: CHECK
+        definition: 'duration >= 0'
+
+  # ==========================================================
+  - table: transfer_record
+    comment: 转账表
+    purpose: 资金往来数据，走 SQL 精确检索，支撑"通话+资金"关联线索
+    fields:
+      - name: transfer_id
+        type: CHAR
+        length: 36
+        primary_key: true
+        nullable: false
+        default: 'UUID()'
+        description: 转账ID，全局唯一
+      - name: case_id
+        type: CHAR
+        length: 36
+        nullable: false
+        description: 案件ID
+        references: case_info.case_id
+      - name: from_account
+        type: VARCHAR
+        length: 64
+        nullable: false
+        description: 转出方账号（银行账号/手机号/平台账号）
+      - name: to_account
+        type: VARCHAR
+        length: 64
+        nullable: false
+        description: 转入方账号
+      - name: amount
+        type: DECIMAL
+        length: '18,2'
+        nullable: false
+        default: '0.00'
+        description: 转账金额（元）
+        domain: '0 <= amount <= 9999999999999999.99'
+      - name: currency
+        type: VARCHAR
+        length: 8
+        nullable: true
+        default: 'CNY'
+        enum: [CNY, USD]
+        description: 币种
+      - name: transfer_time
+        type: DATETIME
+        nullable: false
+        description: 交易发生时间
+      - name: transfer_channel
+        type: VARCHAR
+        length: 32
+        nullable: false
+        enum: [银行转账, 支付宝, 微信, 现金]
+        description: 转账渠道
+      - name: transfer_type
+        type: VARCHAR
+        length: 16
+        nullable: true
+        enum: [扫码, 网银, 柜台]
+        description: 转账方式；资金方向由 from_account/to_account 表达，勿重复
+      - name: remark
+        type: TEXT
+        nullable: true
+        description: 转账备注/附言（可向量化）
+      - name: status
+        type: VARCHAR
+        length: 16
+        nullable: true
+        default: '成功'
+        enum: [成功, 失败, 处理中]
+        description: 交易状态
+      - name: embedding_id
+        type: VARCHAR
+        length: 64
+        nullable: true
+        description: 关联向量库分块ID；超长附言切分的一对多关系由 record_embedding_map 维护
+      - name: raw_data
+        type: JSON
+        nullable: true
+        description: 原始转账字段（溯源）
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 记录插入时间
+      - name: update_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP ON UPDATE
+        description: 记录最后修改时间
+    indexes:
+      - name: idx_case_time
+        columns: [case_id, transfer_time]
+        unique: false
+        description: 核心检索路径
+      - name: idx_from
+        columns: [from_account]
+        unique: false
+      - name: idx_to
+        columns: [to_account]
+        unique: false
+      - name: idx_embedding
+        columns: [embedding_id]
+        unique: false
+    constraints:
+      - name: fk_transfer_case
+        type: FOREIGN KEY
+        definition: 'case_id REFERENCES case_info(case_id)'
+      - name: chk_transfer_amount
+        type: CHECK
+        definition: 'amount >= 0'
+
+  # ==========================================================
+  - table: chat_message
+    comment: 聊天信息表
+    purpose: 非结构化文本数据，message_content 是向量化的核心字段（语义检索）
+    fields:
+      - name: message_id
+        type: CHAR
+        length: 36
+        primary_key: true
+        nullable: false
+        default: 'UUID()'
+        description: 消息ID，全局唯一
+      - name: case_id
+        type: CHAR
+        length: 36
+        nullable: false
+        description: 案件ID
+        references: case_info.case_id
+      - name: sender_id
+        type: VARCHAR
+        length: 64
+        nullable: false
+        description: 发送方标识（账号/手机号）
+      - name: receiver_id
+        type: VARCHAR
+        length: 64
+        nullable: false
+        description: 接收方标识
+      - name: chat_time
+        type: DATETIME
+        nullable: false
+        description: 消息发送时间
+      - name: chat_channel
+        type: VARCHAR
+        length: 32
+        nullable: false
+        enum: [微信, QQ, 短信, 钉钉]
+        description: 聊天渠道
+      - name: message_type
+        type: VARCHAR
+        length: 16
+        nullable: true
+        default: '文本'
+        enum: [文本, 图片, 语音, 视频]
+        description: 消息类型；图片/语音/视频类 message_content 可为空（内容在 media_url）
+      - name: message_content
+        type: TEXT
+        nullable: true
+        description: 聊天正文，向量化核心字段；分块按"会话对+时间窗口"聚合
+      - name: media_url
+        type: VARCHAR
+        length: 512
+        nullable: true
+        description: 图片/语音/视频的存储路径
+      - name: embedding_id
+        type: VARCHAR
+        length: 64
+        nullable: true
+        description: 关联向量库分块ID；常规分块：多条消息聚合成一个分块（多对一），一条消息至多属于一个分块（单值足够）；超长消息切分的一对多关系由 record_embedding_map 维护
+      - name: raw_data
+        type: JSON
+        nullable: true
+        description: 原始聊天字段（溯源）
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 记录插入时间
+      - name: update_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP ON UPDATE
+        description: 记录最后修改时间
+    indexes:
+      - name: idx_case_time
+        columns: [case_id, chat_time]
+        unique: false
+        description: 核心检索路径
+      - name: idx_sender
+        columns: [sender_id]
+        unique: false
+      - name: idx_receiver
+        columns: [receiver_id]
+        unique: false
+      - name: idx_embedding
+        columns: [embedding_id]
+        unique: false
+    constraints:
+      - name: fk_chat_case
+        type: FOREIGN KEY
+        definition: 'case_id REFERENCES case_info(case_id)'
+
+  # ==========================================================
+  - table: user_case_permission
+    comment: 用户-案件权限表
+    purpose: 权限模型的地基；/ask 请求先校验本表再执行检索（权限测试用例的来源）
+    fields:
+      - name: id
+        type: BIGINT
+        length: null
+        primary_key: true
+        nullable: false
+        default: AUTO_INCREMENT
+        description: 自增主键
+      - name: user_id
+        type: VARCHAR
+        length: 64
+        nullable: false
+        description: 用户ID
+      - name: case_id
+        type: CHAR
+        length: 36
+        nullable: false
+        description: 可访问的案件ID
+        references: case_info.case_id
+      - name: role
+        type: VARCHAR
+        length: 16
+        nullable: false
+        default: 'viewer'
+        enum: [admin, viewer]
+        description: admin=案件管理员（可授权他人）；viewer=侦查员（仅查询）
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 授权时间
+    indexes:
+      - name: uk_user_case
+        columns: [user_id, case_id]
+        unique: true
+        description: 同一用户对同一案件只授权一次
+      - name: idx_case
+        columns: [case_id]
+        unique: false
+    constraints:
+      - name: fk_perm_case
+        type: FOREIGN KEY
+        definition: 'case_id REFERENCES case_info(case_id)'
+
+  # ==========================================================
+  - table: audit_log
+    comment: 操作审计日志表
+    purpose: 审计留痕（To G 合规）；import/ask/export/login 四类操作必须落日志
+    fields:
+      - name: log_id
+        type: BIGINT
+        length: null
+        primary_key: true
+        nullable: false
+        default: AUTO_INCREMENT
+        description: 自增主键
+      - name: user_id
+        type: VARCHAR
+        length: 64
+        nullable: false
+        description: 操作用户ID
+      - name: case_id
+        type: CHAR
+        length: 36
+        nullable: true
+        description: 涉及案件；login 等全局操作可为空
+      - name: action
+        type: VARCHAR
+        length: 64
+        nullable: false
+        enum: [import, ask, export, login]
+        description: 操作类型
+      - name: detail
+        type: JSON
+        nullable: true
+        description: 请求摘要（不含敏感原文）
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 操作时间
+    indexes:
+      - name: idx_case_time
+        columns: [case_id, create_time]
+        unique: false
+      - name: idx_user
+        columns: [user_id]
+        unique: false
+
+  # ==========================================================
+  - table: import_log
+    comment: 导入批次日志表
+    purpose: 导入幂等的基础：同一文件重复导入被 uk_file 唯一键拦截
+    fields:
+      - name: batch_id
+        type: CHAR
+        length: 36
+        primary_key: true
+        nullable: false
+        default: 'UUID()'
+        description: 批次ID
+      - name: file_name
+        type: VARCHAR
+        length: 256
+        nullable: false
+        description: 导入文件名
+      - name: file_hash
+        type: CHAR
+        length: 64
+        nullable: false
+        description: 文件 SHA-256（幂等判断依据）
+      - name: case_id
+        type: CHAR
+        length: 36
+        nullable: false
+        description: 目标案件
+      - name: table_name
+        type: VARCHAR
+        length: 32
+        nullable: false
+        enum: [call_record, transfer_record, chat_message]
+        description: 目标表名
+      - name: total_rows
+        type: INT
+        nullable: false
+        description: 文件行数
+      - name: status
+        type: VARCHAR
+        length: 16
+        nullable: false
+        default: '成功'
+        enum: [成功, 失败, 回滚]
+        description: 导入结果
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 导入时间
+    indexes:
+      - name: uk_file
+        columns: [case_id, table_name, file_hash]
+        unique: true
+        description: 幂等拦截点：同案件+同表+同文件hash 只能导入一次
+      - name: idx_case
+        columns: [case_id, create_time]
+        unique: false
+
+  # ==========================================================
+  - table: record_embedding_map
+    comment: 记录-向量映射表
+    purpose: 维护"一条记录 ↔ 多个分块"的一对多关系（超长内容切分场景）；常规场景一条记录只属一个分块，不写本表
+    fields:
+      - name: id
+        type: BIGINT
+        length: null
+        primary_key: true
+        nullable: false
+        default: AUTO_INCREMENT
+        description: 自增主键
+      - name: source_table
+        type: VARCHAR
+        length: 32
+        nullable: false
+        enum: [call_record, transfer_record, chat_message]
+        description: 来源表名（多态引用，无法建物理外键，一致性靠对账脚本）
+      - name: record_id
+        type: CHAR
+        length: 36
+        nullable: false
+        description: 来源记录主键（对应各表主键）
+      - name: embedding_id
+        type: VARCHAR
+        length: 64
+        nullable: false
+        description: 分块（向量）ID
+      - name: create_time
+        type: DATETIME
+        nullable: false
+        default: CURRENT_TIMESTAMP
+        description: 映射建立时间
+    indexes:
+      - name: uk_record_embedding
+        columns: [source_table, record_id, embedding_id]
+        unique: true
+        description: 防重复映射：同一来源记录的同一分块只映射一次
+      - name: idx_embedding
+        columns: [embedding_id]
+        unique: false
+        description: 按分块反查来源记录（证据溯源）
+
+# ============================================================
+# 业务规则（场景法用例的源头）
+# ============================================================
+business_rules:
+  - id: BR-01
+    rule: 案件隔离：所有业务查询与向量检索必须携带 case_id 过滤条件，禁止跨案件访问
+  - id: BR-02
+    rule: 权限先于数据：/ask 请求先校验 user_case_permission，校验失败直接拒绝（不执行检索）
+  - id: BR-03
+    rule: 导入幂等：同一文件（case_id + table_name + SHA256 相同）重复导入直接跳过并记录日志
+  - id: BR-04
+    rule: 向量化范围与分块规则：chat_message.message_content 为向量化核心；call_record.content、transfer_record.remark 可选；结构化字段一律走 SQL，不向量化。常规分块按"会话对+时间窗口"聚合（多条记录 → 一个分块）；单块上限 500 字；超长内容允许切分为多个分块（一条记录 → 多个分块），其一（记录）对多（分块）关系由 record_embedding_map 表维护
+  - id: BR-05
+    rule: 审计留痕：import/ask/export/login 四类操作必须写 audit_log
+  - id: BR-06
+    rule: 证据溯源：LLM 输出的事实性结论必须携带来源记录ID（表主键或 embedding_id），无证据不得下结论
