@@ -1,0 +1,8 @@
+{
+  "table": "transfer_records",
+  "total": 14,
+  "clean": 14,
+  "rejected": 0,
+  "deduped": 0,
+  "errors": {}
+}

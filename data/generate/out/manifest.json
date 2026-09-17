@@ -1,0 +1,13 @@
+{
+  "seed": 42,
+  "scale": "mini",
+  "version": "1.0",
+  "files": {
+    "case_info.csv": "6b256d69f02d574b12dea2963b8d01bec90847174f8f3042e029028e6f5b15d3",
+    "user_case_permission.csv": "8313cd99a0303ab3741b43e6009962664745e194306b2d2e0cf0ea04bcb1ec43",
+    "call_records.csv": "70aa41b3a7440c8bf84b568c1d891f4c2d14e1b739ac65b2ae331559768cfd08",
+    "transfer_records.csv": "40c084ed48f1b690f63d0e8cf4151687949aa7521334410aa973921e3e7dd2c2",
+    "chat_messages.csv": "20b413bf03e8e9cd0bbc5bddd4ddb9790a7f302343e6af4479860dc69c1633d0",
+    "golden.json": "0e0bf7d23e6845475ea99c83353a00ba6fd1e84218fcea093ee1798978c57abe"
+  }
+}

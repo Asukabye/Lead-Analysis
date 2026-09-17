@@ -1,0 +1,8 @@
+{
+  "table": "call_records",
+  "total": 60,
+  "clean": 60,
+  "rejected": 0,
+  "deduped": 0,
+  "errors": {}
+}

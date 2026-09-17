@@ -1,0 +1,3 @@
+﻿user_id,case_id,role
+u_admin,C001,admin
+u_viewer,C001,viewer

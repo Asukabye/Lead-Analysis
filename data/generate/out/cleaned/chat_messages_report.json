@@ -1,0 +1,8 @@
+{
+  "table": "chat_messages",
+  "total": 155,
+  "clean": 155,
+  "rejected": 0,
+  "deduped": 0,
+  "errors": {}
+}
